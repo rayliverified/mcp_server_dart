@@ -26,6 +26,7 @@ class HttpHandlers {
   final bool validateOrigins;
   final bool allowLocalhost;
   final List<String> allowedOrigins;
+  final Set<String>? allowedHeaders;
 
   // Server state
   final Map<String, MCPToolDefinition> tools;
@@ -45,6 +46,7 @@ class HttpHandlers {
     required this.validateOrigins,
     required this.allowLocalhost,
     required this.allowedOrigins,
+    this.allowedHeaders,
     required this.tools,
     required this.resources,
     required this.prompts,
@@ -265,19 +267,25 @@ class HttpHandlers {
 
   /// Extract and filter headers to forward to MCP handlers
   Map<String, String> _extractForwardedHeaders(Headers headers) {
-    const allowedHeaders = {
+    // Use custom whitelist if provided, otherwise use default safe headers
+    final headerWhitelist = {
       'authorization',
       'x-request-id',
       'x-forwarded-for',
       'user-agent',
       'accept-language',
       'content-type',
+      ...?allowedHeaders,
     };
 
     final result = <String, String>{};
     for (final header in headers.entries) {
       final lowerName = header.key.toLowerCase();
-      if (allowedHeaders.contains(lowerName) && header.value.isNotEmpty) {
+      // Check if header is in whitelist (case-insensitive)
+      final isAllowed = headerWhitelist.any(
+        (allowed) => allowed.toLowerCase() == lowerName,
+      );
+      if (isAllowed && header.value.isNotEmpty) {
         result[header.key] = header.value.first;
       }
     }

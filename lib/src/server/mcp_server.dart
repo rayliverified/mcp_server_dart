@@ -55,6 +55,10 @@ abstract class MCPServer {
   /// Whether to allow localhost origins by default (can be disabled for strict production)
   final bool allowLocalhost;
 
+  /// Headers that are allowed to be forwarded to MCP handlers
+  /// If null, uses default safe headers (authorization, x-request-id, etc.)
+  final Set<String> allowedHeaders;
+
   /// Authentication settings
   final bool _authEnabled;
   final TokenValidator _tokenValidator;
@@ -79,6 +83,7 @@ abstract class MCPServer {
     this.allowedOrigins = const [],
     this.validateOrigins = false,
     this.allowLocalhost = true,
+    this.allowedHeaders = const {},
     bool enableAuth = false,
     TokenValidator? tokenValidator,
   }) : _authEnabled = enableAuth,
@@ -94,6 +99,7 @@ abstract class MCPServer {
       validateOrigins: validateOrigins,
       allowLocalhost: allowLocalhost,
       allowedOrigins: allowedOrigins,
+      allowedHeaders: allowedHeaders,
       tools: _tools,
       resources: _resources,
       prompts: _prompts,

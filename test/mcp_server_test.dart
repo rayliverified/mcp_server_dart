@@ -4,7 +4,7 @@ import 'package:mcp_server_dart/mcp_server_dart.dart';
 
 /// Test implementation of MCPServer
 class TestMCPServer extends MCPServer {
-  TestMCPServer()
+  TestMCPServer({super.allowedHeaders})
     : super(name: 'test-server', version: '1.0.0', description: 'Test server');
 
   /// Test tool that returns a greeting
@@ -355,6 +355,81 @@ void main() {
         expect(response.error, isNotNull);
         expect(response.error!.code, equals(-32601));
         expect(response.error!.message, contains('Prompt not found'));
+      });
+    });
+
+    group('Header Whitelisting', () {
+      test('should use custom header whitelist when provided', () async {
+        // Create server with custom header whitelist
+        final customHeaders = {'x-custom-header', 'x-api-key', 'authorization'};
+        final customServer = TestMCPServer(
+          allowedHeaders: customHeaders.toSet(),
+        );
+        customServer.setupTestHandlers();
+
+        // Register a tool that uses custom headers
+        customServer.registerTool('custom_header_tool', (context) async {
+          final customHeader = context.header('x-custom-header');
+          final apiKey = context.header('x-api-key');
+          final auth = context.header('authorization');
+          return {
+            'custom': customHeader ?? 'not-found',
+            'api_key': apiKey ?? 'not-found',
+            'auth': auth ?? 'not-found',
+          };
+        }, description: 'Tool using custom headers');
+
+        final headers = {
+          'x-custom-header': 'custom-value',
+          'x-api-key': 'api-key-123',
+          'authorization': 'Bearer token',
+          'x-request-id': 'req-456', // Should be filtered out
+        };
+
+        final request = MCPRequest(
+          method: 'tools/call',
+          id: 'custom_headers_1',
+          params: {'name': 'custom_header_tool', 'arguments': {}},
+        ).withHeaders(headers);
+
+        final response = await customServer.handleRequest(request);
+        expect(response.error, isNull);
+        expect(response.result, isNotNull);
+
+        final result = response.result as Map<String, dynamic>;
+        final content = result['content'] as List<dynamic>;
+        final textContent = content.first as Map<String, dynamic>;
+        final resultData =
+            jsonDecode(textContent['text']) as Map<String, dynamic>;
+
+        // Custom headers should be available
+        expect(resultData['custom'], equals('custom-value'));
+        expect(resultData['api_key'], equals('api-key-123'));
+        expect(resultData['auth'], equals('Bearer token'));
+      });
+
+      test('should use default headers when whitelist not provided', () async {
+        // Default behavior - should work with standard headers
+        final headers = {
+          'authorization': 'Bearer token123',
+          'x-request-id': 'req-456',
+        };
+
+        server.registerTool('default_headers_tool', (context) async {
+          final auth = context.header('authorization');
+          final reqId = context.header('x-request-id');
+          return {'auth': auth ?? 'none', 'req_id': reqId ?? 'none'};
+        }, description: 'Tool using default headers');
+
+        final request = MCPRequest(
+          method: 'tools/call',
+          id: 'default_headers_1',
+          params: {'name': 'default_headers_tool', 'arguments': {}},
+        ).withHeaders(headers);
+
+        final response = await server.handleRequest(request);
+        expect(response.error, isNull);
+        expect(response.result, isNotNull);
       });
     });
 
