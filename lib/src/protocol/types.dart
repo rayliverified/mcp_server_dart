@@ -6,13 +6,15 @@ class MCPRequest {
   final String jsonrpc;
   final String method;
   final Map<String, dynamic>? params;
-  final dynamic id;
+  final Object? id;
+  final Map<String, String>? headers;
 
   const MCPRequest({
     this.jsonrpc = '2.0',
     required this.method,
     this.params,
     this.id,
+    this.headers,
   });
 
   factory MCPRequest.fromJson(Map<String, dynamic> json) => MCPRequest(
@@ -20,6 +22,9 @@ class MCPRequest {
     method: json['method'] as String,
     params: json['params'] as Map<String, dynamic>?,
     id: json['id'],
+    headers: json['headers'] != null
+        ? Map<String, String>.from(json['headers'] as Map)
+        : null,
   );
 
   Map<String, dynamic> toJson() => {
@@ -27,7 +32,27 @@ class MCPRequest {
     'method': method,
     if (params != null) 'params': params,
     if (id != null) 'id': id,
+    if (headers != null) 'headers': headers,
   };
+
+  /// Creates a new MCPRequest with the given headers merged with existing ones
+  MCPRequest withHeaders(Map<String, String> additionalHeaders) {
+    if (additionalHeaders.isEmpty) return this;
+
+    final mergedHeaders = <String, String>{};
+    if (headers != null) {
+      mergedHeaders.addAll(headers!);
+    }
+    mergedHeaders.addAll(additionalHeaders);
+
+    return MCPRequest(
+      jsonrpc: jsonrpc,
+      method: method,
+      params: params,
+      id: id,
+      headers: mergedHeaders,
+    );
+  }
 }
 
 /// Base class for all MCP responses
@@ -195,8 +220,14 @@ class MCPToolContext {
   final Map<String, dynamic> _params;
   final String toolName;
   final dynamic requestId;
+  final Map<String, String>? _headers;
 
-  MCPToolContext(this._params, this.toolName, this.requestId);
+  MCPToolContext(
+    this._params,
+    this.toolName,
+    this.requestId, {
+    Map<String, String>? headers,
+  }) : _headers = headers;
 
   /// Get a parameter value with type checking
   T param<T>(String name, {T? defaultValue}) {
@@ -223,6 +254,24 @@ class MCPToolContext {
 
   /// Get all parameters as a map
   Map<String, dynamic> get allParams => Map.unmodifiable(_params);
+
+  /// Get request headers (if available)
+  Map<String, String>? get headers =>
+      _headers != null ? Map.unmodifiable(_headers) : null;
+
+  /// Get a header value by name (case-insensitive)
+  String? header(String name) {
+    if (_headers == null) return null;
+
+    // Case-insensitive lookup
+    final lowerName = name.toLowerCase();
+    final headerEntry = _headers.entries.firstWhere(
+      (e) => e.key.toLowerCase() == lowerName,
+      orElse: () => const MapEntry('', ''),
+    );
+
+    return headerEntry.key.isNotEmpty ? headerEntry.value : null;
+  }
 }
 
 /// Resource content following MCP specification

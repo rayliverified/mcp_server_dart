@@ -6,7 +6,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:logging/logging.dart';
-import 'package:relic/io_adapter.dart' as io_adapter;
+import 'package:relic/io_adapter.dart';
 import 'package:relic/relic.dart';
 
 import 'package:mcp_server_dart/src/protocol/types.dart';
@@ -20,9 +20,9 @@ export 'package:mcp_server_dart/src/protocol/types.dart'
     show MCPResourceContent;
 
 /// Type definitions for handlers
-typedef MCPToolHandler = Future<dynamic> Function(MCPToolContext context);
+typedef MCPToolHandler = Future<Object?> Function(MCPToolContext context);
 typedef MCPResourceHandler = Future<MCPResourceContent> Function(String uri);
-typedef MCPPromptHandler = String Function(Map<String, dynamic> args);
+typedef MCPPromptHandler = String Function(Map<String, Object?> args);
 
 /// Base class for MCP servers with annotation support
 abstract class MCPServer {
@@ -44,6 +44,7 @@ abstract class MCPServer {
   final String name;
   final String version;
   final String? description;
+  final String protocolVersion;
 
   /// Allowed origins for CORS validation
   final List<String> allowedOrigins;
@@ -54,8 +55,12 @@ abstract class MCPServer {
   /// Whether to allow localhost origins by default (can be disabled for strict production)
   final bool allowLocalhost;
 
+  /// Authentication settings
+  final bool _authEnabled;
+  final TokenValidator _tokenValidator;
+
   /// Connection tracking for health monitoring
-  final Set<WebSocket> _activeConnections = <WebSocket>{};
+  final Set<RelicWebSocket> _activeConnections = <RelicWebSocket>{};
   RelicServer? _server;
   Timer? _connectionMonitor;
   late final DateTime _startTime;
@@ -69,16 +74,21 @@ abstract class MCPServer {
   MCPServer({
     required this.name,
     this.version = '1.0.0',
+    this.protocolVersion = '2025-06-18',
     this.description,
     this.allowedOrigins = const [],
     this.validateOrigins = false,
     this.allowLocalhost = true,
-  }) {
+    bool enableAuth = false,
+    TokenValidator? tokenValidator,
+  }) : _authEnabled = enableAuth,
+       _tokenValidator = tokenValidator ?? defaultTokenValidator {
     _sessionManager = SessionManager();
     _startTime = DateTime.now();
     _httpHandlers = HttpHandlers(
       serverName: name,
       serverVersion: version,
+      serverProtocolVersion: protocolVersion,
       serverDescription: description,
       startTime: _startTime,
       validateOrigins: validateOrigins,
@@ -90,6 +100,8 @@ abstract class MCPServer {
       activeConnections: _activeConnections,
       handleRequest: handleRequest,
       sessionManager: _sessionManager,
+      authEnabled: _authEnabled,
+      validateToken: _tokenValidator,
     );
   }
 
@@ -98,7 +110,7 @@ abstract class MCPServer {
     String name,
     MCPToolHandler handler, {
     String description = '',
-    Map<String, dynamic>? inputSchema,
+    Map<String, Object?>? inputSchema,
   }) {
     _tools[name] = MCPToolDefinition(
       name: name,
@@ -155,217 +167,199 @@ abstract class MCPServer {
         'prompts/list' => _handlePromptsList(request),
         'prompts/get' => _handlePromptGet(request),
         'ping' => _handlePing(request),
-        _ => MCPResponse(
-          id: request.id,
-          error: MCPError(
-            code: -32601,
-            message: 'Method not found: ${request.method}',
-          ),
+        _ => _errorResponse(
+          request.id,
+          -32601,
+          'Method not found: ${request.method}',
         ),
       };
     } catch (e, stackTrace) {
       _logger.severe('Error handling request: $e', e, stackTrace);
-      return MCPResponse(
-        id: request.id,
-        error: MCPError(code: -32603, message: 'Internal error: $e'),
-      );
+      return _internalError(request.id, e);
     }
+  }
+
+  /// Create success response
+  MCPResponse _successResponse(Object? id, Map<String, dynamic> result) {
+    return MCPResponse(id: id, result: result);
+  }
+
+  /// Create error response
+  MCPResponse _errorResponse(Object? id, int code, String message) {
+    return MCPResponse(
+      id: id,
+      error: MCPError(code: code, message: message),
+    );
+  }
+
+  /// Create internal error response
+  MCPResponse _internalError(Object? id, Object error) {
+    return _errorResponse(id, -32603, 'Internal error: $error');
+  }
+
+  /// Create missing parameters error
+  MCPResponse _missingParamsError(Object? id) {
+    return _errorResponse(id, -32602, 'Missing parameters');
+  }
+
+  /// Require parameters from request
+  Map<String, dynamic>? _requireParams(MCPRequest request) {
+    return request.params;
+  }
+
+  /// Require string parameter from params
+  String? _requireStringParam(Map<String, dynamic> params, String key) {
+    return params[key] as String?;
   }
 
   /// Handle initialize request
   MCPResponse _handleInitialize(MCPRequest request) {
-    return MCPResponse(
-      id: request.id,
-      result: {
-        'protocolVersion': '2025-06-18',
-        'capabilities': {
-          'tools': {'listChanged': false},
-          'resources': {'subscribe': false, 'listChanged': false},
-          'prompts': {'listChanged': false},
-        },
-        'serverInfo': {
-          'name': name,
-          'version': version,
-          if (description != null) 'description': description,
-        },
+    return _successResponse(request.id, {
+      'protocolVersion': protocolVersion,
+      'capabilities': {
+        'tools': {'listChanged': false},
+        'resources': {'subscribe': false, 'listChanged': false},
+        'prompts': {'listChanged': false},
       },
-    );
+      'serverInfo': {
+        'name': name,
+        'version': version,
+        if (description != null) 'description': description,
+      },
+    });
   }
 
   /// Handle ping request for health checking
   MCPResponse _handlePing(MCPRequest request) {
-    return MCPResponse(
-      id: request.id,
-      result: {'status': 'ok', 'timestamp': DateTime.now().toIso8601String()},
-    );
+    return _successResponse(request.id, {
+      'status': 'ok',
+      'timestamp': DateTime.now().toIso8601String(),
+    });
   }
 
   /// Handle tools/list request
   MCPResponse _handleToolsList(MCPRequest request) {
-    return MCPResponse(
-      id: request.id,
-      result: {'tools': _tools.values.map((tool) => tool.toJson()).toList()},
-    );
+    return _successResponse(request.id, {
+      'tools': _tools.values.map((tool) => tool.toJson()).toList(),
+    });
   }
 
   /// Handle tools/call request
   Future<MCPResponse> _handleToolCall(MCPRequest request) async {
-    final params = request.params;
+    final params = _requireParams(request);
     if (params == null) {
-      return MCPResponse(
-        id: request.id,
-        error: MCPError(code: -32602, message: 'Missing parameters'),
-      );
+      return _missingParamsError(request.id);
     }
 
-    final toolName = params['name'] as String?;
+    final toolName = _requireStringParam(params, 'name');
     if (toolName == null) {
-      return MCPResponse(
-        id: request.id,
-        error: MCPError(code: -32602, message: 'Missing tool name'),
-      );
+      return _errorResponse(request.id, -32602, 'Missing tool name');
     }
 
     final handler = _toolHandlers[toolName];
     if (handler == null) {
-      return MCPResponse(
-        id: request.id,
-        error: MCPError(code: -32601, message: 'Tool not found: $toolName'),
-      );
+      return _errorResponse(request.id, -32601, 'Tool not found: $toolName');
     }
 
     try {
-      final arguments = params['arguments'] as Map<String, dynamic>? ?? {};
-      final context = MCPToolContext(arguments, toolName, request.id);
+      final arguments = params['arguments'] as Map<String, Object?>? ?? {};
+      final context = MCPToolContext(
+        arguments,
+        toolName,
+        request.id,
+        headers: request.headers,
+      );
       final result = await handler(context);
 
-      return MCPResponse(
-        id: request.id,
-        result: {
-          'content': [
-            {'type': 'text', 'text': jsonEncode(result)},
-          ],
-        },
-      );
+      return _successResponse(request.id, {
+        'content': [
+          {'type': 'text', 'text': jsonEncode(result)},
+        ],
+      });
     } catch (e) {
-      return MCPResponse(
-        id: request.id,
-        error: MCPError(code: -32603, message: 'Tool execution error: $e'),
-      );
+      return _errorResponse(request.id, -32603, 'Tool execution error: $e');
     }
   }
 
   /// Handle resources/list request
   MCPResponse _handleResourcesList(MCPRequest request) {
-    return MCPResponse(
-      id: request.id,
-      result: {
-        'resources': _resources.values
-            .map((resource) => resource.toJson())
-            .toList(),
-      },
-    );
+    return _successResponse(request.id, {
+      'resources': _resources.values
+          .map((resource) => resource.toJson())
+          .toList(),
+    });
   }
 
   /// Handle resources/read request
   Future<MCPResponse> _handleResourceRead(MCPRequest request) async {
-    final params = request.params;
+    final params = _requireParams(request);
     if (params == null) {
-      return MCPResponse(
-        id: request.id,
-        error: MCPError(code: -32602, message: 'Missing parameters'),
-      );
+      return _missingParamsError(request.id);
     }
 
-    final uri = params['uri'] as String?;
+    final uri = _requireStringParam(params, 'uri');
     if (uri == null) {
-      return MCPResponse(
-        id: request.id,
-        error: MCPError(code: -32602, message: 'Missing resource URI'),
-      );
+      return _errorResponse(request.id, -32602, 'Missing resource URI');
     }
 
     final handler = _resourceHandlers[uri];
     if (handler == null) {
-      return MCPResponse(
-        id: request.id,
-        error: MCPError(code: -32601, message: 'Resource not found: $uri'),
-      );
+      return _errorResponse(request.id, -32601, 'Resource not found: $uri');
     }
 
     try {
       final content = await handler(uri);
-      return MCPResponse(
-        id: request.id,
-        result: {
-          'contents': [content.toJson()],
-        },
-      );
+      return _successResponse(request.id, {
+        'contents': [content.toJson()],
+      });
     } catch (e) {
-      return MCPResponse(
-        id: request.id,
-        error: MCPError(code: -32603, message: 'Resource read error: $e'),
-      );
+      return _errorResponse(request.id, -32603, 'Resource read error: $e');
     }
   }
 
   /// Handle prompts/list request
   MCPResponse _handlePromptsList(MCPRequest request) {
-    return MCPResponse(
-      id: request.id,
-      result: {
-        'prompts': _prompts.values.map((prompt) => prompt.toJson()).toList(),
-      },
-    );
+    return _successResponse(request.id, {
+      'prompts': _prompts.values.map((prompt) => prompt.toJson()).toList(),
+    });
   }
 
   /// Handle prompts/get request
   MCPResponse _handlePromptGet(MCPRequest request) {
-    final params = request.params;
+    final params = _requireParams(request);
     if (params == null) {
-      return MCPResponse(
-        id: request.id,
-        error: MCPError(code: -32602, message: 'Missing parameters'),
-      );
+      return _missingParamsError(request.id);
     }
 
-    final promptName = params['name'] as String?;
+    final promptName = _requireStringParam(params, 'name');
     if (promptName == null) {
-      return MCPResponse(
-        id: request.id,
-        error: MCPError(code: -32602, message: 'Missing prompt name'),
-      );
+      return _errorResponse(request.id, -32602, 'Missing prompt name');
     }
 
     final handler = _promptHandlers[promptName];
     if (handler == null) {
-      return MCPResponse(
-        id: request.id,
-        error: MCPError(code: -32601, message: 'Prompt not found: $promptName'),
+      return _errorResponse(
+        request.id,
+        -32601,
+        'Prompt not found: $promptName',
       );
     }
 
     try {
-      final arguments = params['arguments'] as Map<String, dynamic>? ?? {};
+      final arguments = params['arguments'] as Map<String, Object?>? ?? {};
       final result = handler(arguments);
 
-      return MCPResponse(
-        id: request.id,
-        result: {
-          'description': _prompts[promptName]?.description ?? '',
-          'messages': [
-            {
-              'role': 'user',
-              'content': {'type': 'text', 'text': result},
-            },
-          ],
-        },
-      );
+      return _successResponse(request.id, {
+        'description': _prompts[promptName]?.description ?? '',
+        'messages': [
+          {
+            'role': 'user',
+            'content': {'type': 'text', 'text': result},
+          },
+        ],
+      });
     } catch (e) {
-      return MCPResponse(
-        id: request.id,
-        error: MCPError(code: -32603, message: 'Prompt execution error: $e'),
-      );
+      return _errorResponse(request.id, -32603, 'Prompt execution error: $e');
     }
   }
 
@@ -383,35 +377,20 @@ abstract class MCPServer {
 
     try {
       // Setup router with health check, status, and MCP endpoints
-      final router = Router<Handler>()
-        ..get('/health', respondWith(_httpHandlers.healthCheckHandler))
-        ..get('/status', respondWith(_httpHandlers.statusHandler))
-        ..get('/ws', respondWith(_httpHandlers.webSocketUpgradeHandler))
-        ..get('/mcp', respondWith(_httpHandlers.mcpSseHandler))
-        ..get('/sse', respondWith(_httpHandlers.mcpSseHandler))
-        ..post('/mcp', respondWith(_httpHandlers.mcpPostHandler));
+      final router = RelicApp()
+        ..get('/health', _httpHandlers.healthCheckHandler)
+        ..get('/status', _httpHandlers.statusHandler)
+        ..use('/*', corsMiddleware(enableCors))
+        ..use('/*', errorHandlingMiddleware(_logger))
+        ..get('/ws', _httpHandlers.webSocketUpgradeHandler)
+        ..get('/mcp', _httpHandlers.mcpSseHandler)
+        ..get('/sse', _httpHandlers.mcpSseHandler)
+        ..post('/mcp', _httpHandlers.mcpPostHandler)
+        ..fallback = (request) => Response.notFound(
+          body: Body.fromString('MCP Server - Endpoint not found'),
+        );
 
-      // Setup middleware pipeline with proper error handling
-      final pipeline = Pipeline()
-          .addMiddleware(corsMiddleware(enableCors))
-          .addMiddleware(loggingMiddleware(_logger))
-          .addMiddleware(errorHandlingMiddleware(_logger))
-          .addMiddleware(routeWith(router));
-
-      // Create handler with 404 fallback
-      final handler = pipeline.addHandler(
-        respondWith(
-          (request) => Response.notFound(
-            body: Body.fromString('MCP Server - Endpoint not found'),
-          ),
-        ),
-      );
-
-      // Start the Relic server using io_adapter serve function
-      final httpServer = await HttpServer.bind(address, port);
-      final adapter = io_adapter.IOAdapter(httpServer);
-      _server = RelicServer(adapter);
-      await _server!.mountAndStart(handler);
+      await router.serve(address: address, port: port);
 
       _logger.info('✓ MCP Server listening on ws://localhost:$port/ws');
       _logger.info('✓ Health check available at http://localhost:$port/health');
@@ -437,14 +416,9 @@ abstract class MCPServer {
 
   /// Clean up stale connections
   void _cleanupStaleConnections() {
-    final staleConnections = <WebSocket>[];
-
-    for (final connection in _activeConnections) {
-      if (connection.readyState == WebSocket.closed ||
-          connection.readyState == WebSocket.closing) {
-        staleConnections.add(connection);
-      }
-    }
+    final staleConnections = _activeConnections
+        .where((connection) => connection.isClosed)
+        .toList();
 
     for (final connection in staleConnections) {
       _activeConnections.remove(connection);
@@ -508,5 +482,4 @@ abstract class MCPServer {
       }
     }
   }
-
 }

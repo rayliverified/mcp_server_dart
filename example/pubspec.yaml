@@ -1,7 +1,7 @@
 name: dart_mcp_example
 description: Examples demonstrating the MCP Dart framework with annotation-based code generation.
 version: 1.0.0
-publish_to: none  # This is an example package, not for publishing
+publish_to: none # This is an example package, not for publishing
 
 environment:
   sdk: ^3.9.0
@@ -10,10 +10,9 @@ dependencies:
   # MCP Dart framework - in a real project this would be a pub.dev dependency
   mcp_server_dart:
     path: ../
-  
+
   # Core dependencies for examples
   logging: ^1.3.0
-  relic: ^0.5.0
 
 dev_dependencies:
   # Code generation for annotation processing
@@ -21,7 +20,7 @@ dev_dependencies:
   source_gen: ^4.0.1
   build: ^4.0.0
   analyzer: ^8.1.1
-  
+
   # Testing and linting
   lints: ^6.0.0
   test: ^1.26.3

@@ -57,9 +57,14 @@ extension ResourceTestMCPRegistration on ResourceTestMCP {
 
     // Register handler for @MCPTool('ping')
 
-    registerTool('ping', (context) async {
-      return await ping();
-    }, description: 'Simple ping test');
+    registerTool(
+      'ping',
+      (context) async {
+        return await ping();
+      },
+      description: 'Simple ping test',
+      inputSchema: {},
+    );
   }
 
   /// Generates standardized usage documentation for MCP servers.

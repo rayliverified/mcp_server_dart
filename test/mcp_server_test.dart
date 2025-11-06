@@ -189,6 +189,43 @@ void main() {
         expect(response.error!.code, equals(-32603));
         expect(response.error!.message, contains('Tool execution error'));
       });
+
+      test('should pass headers to tool context', () async {
+        final headers = {
+          'authorization': 'Bearer test-token',
+          'x-request-id': 'test-123',
+        };
+
+        // Register a tool that uses context
+        server.registerTool('greet_with_context', (context) async {
+          final name = context.param<String>('name');
+          final authHeader = context.header('authorization');
+          final requestId = context.header('x-request-id');
+          return 'Hello, $name! (auth: ${authHeader ?? 'none'}, req: ${requestId ?? 'none'})';
+        }, description: 'Greet with context headers');
+
+        final contextRequest = MCPRequest(
+          method: 'tools/call',
+          id: '7',
+          params: {
+            'name': 'greet_with_context',
+            'arguments': {'name': 'World'},
+          },
+        ).withHeaders(headers);
+
+        final response = await server.handleRequest(contextRequest);
+
+        expect(response.id, equals('7'));
+        expect(response.error, isNull);
+
+        final result = response.result as Map<String, dynamic>;
+        final content = result['content'] as List<dynamic>;
+        final textContent = content.first as Map<String, dynamic>;
+        final resultText = jsonDecode(textContent['text']) as String;
+        expect(resultText, contains('Hello, World!'));
+        expect(resultText, contains('Bearer test-token'));
+        expect(resultText, contains('test-123'));
+      });
     });
 
     group('Resources', () {

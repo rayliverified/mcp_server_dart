@@ -64,7 +64,11 @@ extension WeatherServiceMCPRegistration on WeatherServiceMCP {
       (context) async {
         final location = context.param<String>('location');
         final severity = context.optionalParam<String?>('severity');
-        return await getWeatherAlerts(location, severity: severity);
+        return await getWeatherAlerts(
+          location,
+          severity: severity,
+          context: context,
+        );
       },
       description: 'Get weather alerts for a location',
       inputSchema: {

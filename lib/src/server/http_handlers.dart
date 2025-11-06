@@ -3,11 +3,12 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:logging/logging.dart';
+import 'package:mcp_server_dart/src/server/middleware.dart';
 import 'package:relic/relic.dart';
+import 'package:web_socket/web_socket.dart';
 
 import 'package:mcp_server_dart/src/protocol/types.dart';
 import 'session_manager.dart';
@@ -19,6 +20,7 @@ class HttpHandlers {
   final SessionManager _sessionManager;
   final String serverName;
   final String serverVersion;
+  final String serverProtocolVersion;
   final String? serverDescription;
   final DateTime startTime;
   final bool validateOrigins;
@@ -29,12 +31,15 @@ class HttpHandlers {
   final Map<String, MCPToolDefinition> tools;
   final Map<String, MCPResourceDefinition> resources;
   final Map<String, MCPPromptDefinition> prompts;
-  final Set<WebSocket> activeConnections;
+  final Set<RelicWebSocket> activeConnections;
   final Future<MCPResponse> Function(MCPRequest) handleRequest;
+  final bool authEnabled;
+  final TokenValidator validateToken;
 
   HttpHandlers({
     required this.serverName,
     required this.serverVersion,
+    required this.serverProtocolVersion,
     required this.serverDescription,
     required this.startTime,
     required this.validateOrigins,
@@ -46,11 +51,14 @@ class HttpHandlers {
     required this.activeConnections,
     required this.handleRequest,
     required SessionManager sessionManager,
-  }) : _sessionManager = sessionManager;
+    this.authEnabled = false,
+    TokenValidator? validateToken,
+  }) : _sessionManager = sessionManager,
+       validateToken = validateToken ?? defaultTokenValidator;
 
   /// Health check endpoint handler
   Response healthCheckHandler(Request request) {
-    final healthData = {
+    return _jsonResponse({
       'status': 'healthy',
       'timestamp': DateTime.now().toIso8601String(),
       'server': serverName,
@@ -59,22 +67,16 @@ class HttpHandlers {
       'tools': tools.length,
       'resources': resources.length,
       'prompts': prompts.length,
-    };
-
-    return Response.ok(
-      body: Body.fromString(jsonEncode(healthData), mimeType: MimeType.json),
-      headers: Headers.fromMap({
-        'content-type': ['application/json'],
-      }),
-    );
+    });
   }
 
   /// Server status endpoint handler
   Response statusHandler(Request request) {
-    final statusData = {
+    return _jsonResponse({
       'server': {
         'name': serverName,
         'version': serverVersion,
+        'protocol_version': serverProtocolVersion,
         'description': serverDescription,
       },
       'capabilities': {
@@ -86,78 +88,300 @@ class HttpHandlers {
         'active_connections': activeConnections.length,
         'uptime': DateTime.now().difference(startTime).inSeconds,
       },
+    });
+  }
+
+  /// Validate authentication token from WebSocket upgrade request
+  Future<bool> _validateWebSocketAuth(Request request) async {
+    if (!authEnabled) return true;
+
+    // Check for token in query parameters or headers
+    final token =
+        request.url.queryParameters['token'] ??
+        request.headers.authorization?.headerValue.replaceFirst('Bearer ', '');
+
+    if (token == null || token.isEmpty) {
+      _logger.warning(
+        'WebSocket connection rejected: No authentication token provided',
+      );
+      return false;
+    }
+
+    final isValid = await validateToken(token);
+    if (!isValid) {
+      _logger.warning(
+        'WebSocket connection rejected: Invalid authentication token',
+      );
+    }
+
+    return isValid;
+  }
+
+  /// WebSocket upgrade handler for MCP protocol over WebSockets
+  WebSocketUpgrade webSocketUpgradeHandler(final Request request) {
+    // Extract headers to forward to WebSocket messages
+    final forwardedHeaders = _extractForwardedHeaders(request.headers);
+
+    return WebSocketUpgrade((final webSocket) async {
+      // Validate authentication if enabled
+      if (authEnabled) {
+        final isValid = await _validateWebSocketAuth(request);
+        if (!isValid) {
+          webSocket.close(4001, 'Authentication required');
+          return;
+        }
+      }
+
+      // Get or create session ID
+      final sessionId =
+          request.headers['mcp-session-id']?.first ??
+          _sessionManager.generateSessionId();
+
+      if (!_sessionManager.isValidSession(sessionId)) {
+        _sessionManager.createSession(sessionId);
+        _sessionManager.addWebSocketSession(sessionId, webSocket);
+      } else {
+        _sessionManager.updateSession(sessionId);
+      }
+
+      // Store the headers in the WebSocket context
+      _webSocketHeadersProperty[request] = forwardedHeaders;
+
+      _logger.info('WebSocket connection established for session $sessionId');
+      activeConnections.add(webSocket);
+
+      // Send welcome message
+      webSocket.sendText(
+        jsonEncode({
+          'jsonrpc': '2.0',
+          'method': 'welcome',
+          'params': {
+            'server': serverName,
+            'version': serverVersion,
+            'sessionId': sessionId,
+          },
+        }),
+      );
+
+      // Handle incoming messages
+      await for (final event in webSocket.events) {
+        switch (event) {
+          case TextDataReceived(text: final message):
+            _handleWebSocketMessage(request, webSocket, message, sessionId);
+          case CloseReceived():
+            _logger.info('WebSocket connection closed for session $sessionId');
+            activeConnections.remove(webSocket);
+            _sessionManager.removeWebSocketSession(sessionId);
+            break;
+          default:
+            // Handle other event types if needed
+            break;
+        }
+      }
+    });
+  }
+
+  /// Send an error response through WebSocket
+  void _sendErrorResponse(
+    RelicWebSocket webSocket,
+    int code,
+    String message, [
+    dynamic error,
+  ]) {
+    try {
+      webSocket.sendText(
+        jsonEncode({
+          'jsonrpc': '2.0',
+          'error': {
+            'code': code,
+            'message': message,
+            if (error != null) 'data': error.toString(),
+          },
+        }),
+      );
+    } catch (e) {
+      _logger.severe('Failed to send error response', e);
+      webSocket.close(1011, 'Failed to process message');
+    }
+  }
+
+  /// Parse and validate WebSocket message
+  MCPRequest _parseWebSocketMessage(String message, Request request) {
+    if (message.trim().isEmpty) {
+      throw const FormatException('Empty message received');
+    }
+
+    final requestJson = jsonDecode(message) as Map<String, dynamic>;
+    if (requestJson['jsonrpc'] != '2.0') {
+      throw const FormatException('Invalid JSON-RPC version');
+    }
+
+    var mcpRequest = MCPRequest.fromJson(requestJson);
+
+    // Add stored headers from WebSocket context
+    try {
+      if (request.mcpHeaders.isNotEmpty) {
+        mcpRequest = mcpRequest.withHeaders(request.mcpHeaders);
+      }
+    } catch (e, st) {
+      _logger.warning('Failed to process WebSocket headers', e, st);
+      // Continue without headers rather than failing the request
+    }
+
+    return mcpRequest;
+  }
+
+  /// Process incoming WebSocket messages
+  void _handleWebSocketMessage(
+    Request request,
+    RelicWebSocket webSocket,
+    String message,
+    String sessionId,
+  ) async {
+    try {
+      final mcpRequest = _parseWebSocketMessage(message, request);
+      final response = await handleRequest(mcpRequest);
+      webSocket.sendText(jsonEncode(response.toJson()));
+    } on FormatException catch (e) {
+      _logger.warning('Invalid message format: ${e.message}');
+      _sendErrorResponse(webSocket, -32700, 'Parse error: ${e.message}');
+    } on JsonUnsupportedObjectError catch (e) {
+      _logger.warning('JSON serialization error', e);
+      _sendErrorResponse(
+        webSocket,
+        -32603,
+        'Internal error: Invalid response data',
+      );
+    } catch (e, stackTrace) {
+      _logger.severe('Error processing WebSocket message', e, stackTrace);
+      _sendErrorResponse(
+        webSocket,
+        -32603,
+        'Internal error: ${e.toString().split('\n').first}',
+        e,
+      );
+    }
+  }
+
+  /// Extract and filter headers to forward to MCP handlers
+  Map<String, String> _extractForwardedHeaders(Headers headers) {
+    const allowedHeaders = {
+      'authorization',
+      'x-request-id',
+      'x-forwarded-for',
+      'user-agent',
+      'accept-language',
+      'content-type',
     };
 
-    return Response.ok(
-      body: Body.fromString(jsonEncode(statusData), mimeType: MimeType.json),
-      headers: Headers.fromMap({
-        'content-type': ['application/json'],
-      }),
+    final result = <String, String>{};
+    for (final header in headers.entries) {
+      final lowerName = header.key.toLowerCase();
+      if (allowedHeaders.contains(lowerName) && header.value.isNotEmpty) {
+        result[header.key] = header.value.first;
+      }
+    }
+    return result;
+  }
+
+  /// Validate origin header for CORS
+  bool _validateOrigin(Request request) {
+    if (!validateOrigins) return true;
+    final origin = request.headers['origin']?.first;
+    return ServerUtils.isValidOrigin(
+      origin,
+      validateOrigins: validateOrigins,
+      allowLocalhost: allowLocalhost,
+      allowedOrigins: allowedOrigins,
     );
   }
 
-  /// WebSocket upgrade handler (placeholder - WebSocket support to be added)
-  Response webSocketUpgradeHandler(Request request) {
-    // For now, return a message indicating WebSocket support is coming
-    return Response.notImplemented(
-      body: Body.fromString('WebSocket support coming soon'),
-      headers: Headers.fromMap({
-        'content-type': ['text/plain'],
-      }),
+  /// Create JSON response with standard headers
+  Response _jsonResponse(Map<String, dynamic> data) {
+    return Response.ok(
+      body: Body.fromString(jsonEncode(data), mimeType: MimeType.json),
+      headers: _jsonHeaders(),
+    );
+  }
+
+  /// Create standard JSON headers
+  Headers _jsonHeaders() {
+    return Headers.fromMap({
+      'content-type': ['application/json'],
+    });
+  }
+
+  /// Create MCP protocol headers
+  Headers _mcpHeaders({String? sessionId}) {
+    final headers = <String, List<String>>{
+      'content-type': ['application/json'],
+      'mcp-protocol-version': [serverProtocolVersion],
+    };
+    if (sessionId != null) {
+      headers['mcp-session-id'] = [sessionId];
+    }
+    return Headers.fromMap(headers);
+  }
+
+  /// Create SSE headers
+  Headers _sseHeaders({String? sessionId}) {
+    final headers = <String, List<String>>{
+      'content-type': ['text/event-stream'],
+      'cache-control': ['no-cache'],
+      'connection': ['keep-alive'],
+      'access-control-allow-origin': ['*'],
+      'mcp-protocol-version': [serverProtocolVersion],
+    };
+    if (sessionId != null) {
+      headers['mcp-session-id'] = [sessionId];
+    }
+    return Headers.fromMap(headers);
+  }
+
+  /// Create error response
+  Response _errorResponse(
+    int statusCode,
+    String message, {
+    Map<String, dynamic>? errorData,
+  }) {
+    final error = {'jsonrpc': '2.0', if (errorData != null) ...errorData};
+    return Response(
+      statusCode,
+      body: Body.fromString(jsonEncode(error), mimeType: MimeType.json),
+      headers: _jsonHeaders(),
     );
   }
 
   /// MCP POST handler for Streamable HTTP transport
   Future<Response> mcpPostHandler(Request request) async {
     try {
-      // Validate Origin header for security
-      if (validateOrigins) {
-        final origin = request.headers['origin']?.first;
-        if (!ServerUtils.isValidOrigin(
-          origin,
-          validateOrigins: validateOrigins,
-          allowLocalhost: allowLocalhost,
-          allowedOrigins: allowedOrigins,
-        )) {
-          return Response.forbidden(body: Body.fromString('Invalid origin'));
-        }
+      if (!_validateOrigin(request)) {
+        return Response.forbidden(body: Body.fromString('Invalid origin'));
       }
 
-      // Check for session ID
       var sessionId = request.headers['mcp-session-id']?.first;
-
-      // Parse JSON-RPC message from body
-      final bodyBytes = <int>[];
-      await for (final chunk in request.body.read()) {
-        bodyBytes.addAll(chunk);
-      }
-      final bodyString = utf8.decode(bodyBytes);
-      final jsonData = jsonDecode(bodyString);
-      final mcpRequest = MCPRequest.fromJson(jsonData);
+      final requestBody = await request.readAsString();
+      final requestJson = jsonDecode(requestBody) as Map<String, dynamic>;
+      var mcpRequest = MCPRequest.fromJson(requestJson);
 
       // Handle initialization specially to potentially create session
       if (mcpRequest.method == 'initialize') {
-        final response = await handleRequest(mcpRequest);
-        final responseJson = response.toJson();
+        // For initialization, always use headers from current request
+        mcpRequest = mcpRequest.withHeaders(
+          _extractForwardedHeaders(request.headers),
+        );
 
-        // Create session ID for this client if not provided
+        final response = await handleRequest(mcpRequest);
         if (sessionId == null) {
           sessionId = _sessionManager.generateSessionId();
           _sessionManager.createSession(sessionId);
         }
-
-        final headers = Headers.fromMap({
-          'content-type': ['application/json'],
-          'mcp-protocol-version': ['2025-06-18'],
-          'mcp-session-id': [sessionId],
-        });
-
         return Response.ok(
           body: Body.fromString(
-            jsonEncode(responseJson),
+            jsonEncode(response.toJson()),
             mimeType: MimeType.json,
           ),
-          headers: headers,
+          headers: _mcpHeaders(sessionId: sessionId),
         );
       }
 
@@ -168,34 +392,41 @@ class HttpHandlers {
             body: Body.fromString('Session not found or expired'),
           );
         }
-        _sessionManager.updateSession(sessionId); // Update timestamp
+        _sessionManager.updateSession(sessionId);
+
+        // For SSE sessions, use stored headers if available
+        final storedHeaders = _sessionManager.getSessionHeaders(sessionId);
+        if (storedHeaders != null && storedHeaders.isNotEmpty) {
+          mcpRequest = mcpRequest.withHeaders(storedHeaders);
+        } else {
+          // Fallback to extracting from current request (for WebSocket or non-SSE POST)
+          mcpRequest = mcpRequest.withHeaders(
+            _extractForwardedHeaders(request.headers),
+          );
+        }
+      } else {
+        // No session, use headers from current request
+        mcpRequest = mcpRequest.withHeaders(
+          _extractForwardedHeaders(request.headers),
+        );
       }
 
-      // Return JSON response by default
       final response = await handleRequest(mcpRequest);
       return Response.ok(
         body: Body.fromString(
           jsonEncode(response.toJson()),
           mimeType: MimeType.json,
         ),
-        headers: Headers.fromMap({
-          'content-type': ['application/json'],
-          'mcp-protocol-version': ['2025-06-18'],
-        }),
+        headers: _mcpHeaders(),
       );
     } catch (e, stackTrace) {
       _logger.severe('Error in MCP POST handler: $e', e, stackTrace);
-      return Response.badRequest(
-        body: Body.fromString(
-          jsonEncode({
-            'jsonrpc': '2.0',
-            'error': {'code': -32700, 'message': 'Parse error: $e'},
-          }),
-          mimeType: MimeType.json,
-        ),
-        headers: Headers.fromMap({
-          'content-type': ['application/json'],
-        }),
+      return _errorResponse(
+        400,
+        'Parse error',
+        errorData: {
+          'error': {'code': -32700, 'message': 'Parse error: $e'},
+        },
       );
     }
   }
@@ -203,20 +434,10 @@ class HttpHandlers {
   /// MCP GET handler for SSE streams
   Response mcpSseHandler(Request request) {
     try {
-      // Validate Origin header for security
-      if (validateOrigins) {
-        final origin = request.headers['origin']?.first;
-        if (!ServerUtils.isValidOrigin(
-          origin,
-          validateOrigins: validateOrigins,
-          allowLocalhost: allowLocalhost,
-          allowedOrigins: allowedOrigins,
-        )) {
-          return Response.forbidden(body: Body.fromString('Invalid origin'));
-        }
+      if (!_validateOrigin(request)) {
+        return Response.forbidden(body: Body.fromString('Invalid origin'));
       }
 
-      // Check Accept header
       final acceptHeader = request.headers['accept']?.first ?? '';
       if (!acceptHeader.contains('text/event-stream')) {
         return Response(
@@ -230,13 +451,17 @@ class HttpHandlers {
         );
       }
 
-      // Create SSE stream for server-initiated messages
       final controller = StreamController<String>();
       final sessionId = _sessionManager.generateSessionId();
 
-      _sessionManager.addSseSession(sessionId, controller);
+      // Extract headers to forward to MCP handlers
+      final forwardedHeaders = _extractForwardedHeaders(request.headers);
 
-      // Send initial connection event
+      _sessionManager.addSseSession(
+        sessionId,
+        controller,
+        headers: forwardedHeaders,
+      );
       _sessionManager.sendSseEvent(controller, 'connected', {
         'sessionId': sessionId,
         'timestamp': DateTime.now().toIso8601String(),
@@ -249,14 +474,7 @@ class HttpHandlers {
           ),
           mimeType: MimeType.parse('text/event-stream'),
         ),
-        headers: Headers.fromMap({
-          'content-type': ['text/event-stream'],
-          'cache-control': ['no-cache'],
-          'connection': ['keep-alive'],
-          'access-control-allow-origin': ['*'],
-          'mcp-protocol-version': ['2025-06-18'],
-          'mcp-session-id': [sessionId],
-        }),
+        headers: _sseHeaders(sessionId: sessionId),
       );
     } catch (e, stackTrace) {
       _logger.severe('Error in MCP SSE handler: $e', e, stackTrace);
@@ -269,8 +487,6 @@ class HttpHandlers {
   /// Create SSE response with JSON-RPC message
   Response createSseResponse(MCPRequest request, String? sessionId) {
     final controller = StreamController<String>();
-
-    // Process request asynchronously and stream the response
     _processRequestForSse(request, controller, sessionId);
 
     return Response.ok(
@@ -278,14 +494,7 @@ class HttpHandlers {
         controller.stream.map((data) => Uint8List.fromList(utf8.encode(data))),
         mimeType: MimeType.parse('text/event-stream'),
       ),
-      headers: Headers.fromMap({
-        'content-type': ['text/event-stream'],
-        'cache-control': ['no-cache'],
-        'connection': ['keep-alive'],
-        'access-control-allow-origin': ['*'],
-        'mcp-protocol-version': ['2025-06-18'],
-        if (sessionId != null) 'mcp-session-id': [sessionId],
-      }),
+      headers: _sseHeaders(sessionId: sessionId),
     );
   }
 
@@ -296,6 +505,14 @@ class HttpHandlers {
     String? sessionId,
   ) async {
     try {
+      // Add stored headers from session if available
+      if (sessionId != null) {
+        final storedHeaders = _sessionManager.getSessionHeaders(sessionId);
+        if (storedHeaders != null && storedHeaders.isNotEmpty) {
+          request = request.withHeaders(storedHeaders);
+        }
+      }
+
       final response = await handleRequest(request);
       final eventId = sessionId != null
           ? _sessionManager.getNextEventId(sessionId)
@@ -320,3 +537,13 @@ class HttpHandlers {
     }
   }
 }
+
+extension RequestIdExtension on Request {
+  /// Get the request ID from the request context
+  Map<String, String> get mcpHeaders => _webSocketHeadersProperty[this];
+}
+
+/// Context property for storing headers in WebSocket connections
+final _webSocketHeadersProperty = ContextProperty<Map<String, String>>(
+  'mcp_headers',
+);

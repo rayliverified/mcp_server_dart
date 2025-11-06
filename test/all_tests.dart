@@ -9,6 +9,7 @@ import 'annotations_test.dart' as annotations_tests;
 import 'mcp_server_test.dart' as server_tests;
 import 'production_mcp_test.dart' as production_tests;
 import 'protocol_types_test.dart' as protocol_tests;
+import 'session_and_headers_test.dart' as session_tests;
 
 void main() {
   // Run all test suites
@@ -16,4 +17,5 @@ void main() {
   server_tests.main();
   protocol_tests.main();
   production_tests.main();
+  session_tests.main();
 }

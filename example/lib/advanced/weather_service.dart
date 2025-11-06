@@ -93,7 +93,14 @@ class WeatherServiceMCP extends MCPServer {
     @param(description: 'Location to check for alerts') String location, {
     @param(required: false, description: 'Alert severity filter')
     String? severity,
+    MCPToolContext? context,
   }) async {
+    print(context?.headers);
+    // Access headers from context
+    // Example: final authHeader = context?.header('authorization');
+    // Example: final allHeaders = context?.headers;
+    // Example: final requestId = context?.header('x-request-id');
+
     await Future.delayed(Duration(milliseconds: 100));
 
     final random = Random();

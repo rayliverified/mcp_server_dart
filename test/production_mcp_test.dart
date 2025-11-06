@@ -565,6 +565,55 @@ void main() {
         expect(insertData.first['inserted_id'], equals(3));
       });
 
+      test('should handle tools with MCPToolContext parameter', () async {
+        // Register a tool that accepts MCPToolContext
+        server.registerTool('authenticated_weather', (context) async {
+          final location = context.param<String>('location');
+          final authHeader = context.header('authorization');
+          final requestId = context.header('x-request-id');
+
+          // Simulate using headers for authentication/logging
+          if (authHeader == null || !authHeader.startsWith('Bearer ')) {
+            throw ArgumentError('Authentication required');
+          }
+
+          return {
+            'location': location,
+            'temperature': 22,
+            'unit': '°C',
+            'condition': 'sunny',
+            'request_id': requestId ?? 'unknown',
+            'authenticated': true,
+          };
+        }, description: 'Get weather with authentication');
+
+        final headers = {
+          'authorization': 'Bearer test-token-123',
+          'x-request-id': 'req-weather-456',
+        };
+
+        final request = MCPRequest(
+          method: 'tools/call',
+          id: 'auth_weather_1',
+          params: {
+            'name': 'authenticated_weather',
+            'arguments': {'location': 'San Francisco'},
+          },
+        ).withHeaders(headers);
+
+        final response = await server.handleRequest(request);
+
+        expect(response.result, isNotNull);
+        expect(response.error, isNull);
+
+        final content = response.result['content'] as List<dynamic>;
+        final weatherData = jsonDecode(content.first['text']);
+
+        expect(weatherData['location'], equals('San Francisco'));
+        expect(weatherData['authenticated'], isTrue);
+        expect(weatherData['request_id'], equals('req-weather-456'));
+      });
+
       test('should handle tool errors appropriately', () async {
         // Test invalid file operation
         final invalidRequest = MCPRequest(

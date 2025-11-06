@@ -148,8 +148,9 @@ class MCPGenerator extends Generator {
     String returnStatement = '';
 
     if (annotationType == 'MCPTool') {
-      // Generate parameter extractions for tools
+      // Generate parameter extractions for tools (excluding MCPToolContext)
       final extractions = method.formalParameters
+          .where((param) => !_isMCPToolContext(param))
           .map((param) {
             final paramName = param.name;
             if (paramName == null) return '';
@@ -172,19 +173,35 @@ class MCPGenerator extends Generator {
       parameterExtractions = extractions;
 
       // Generate method call
+      // Positional args (excluding MCPToolContext)
       final positionalArgs = method.formalParameters
-          .where((p) => p.isRequiredPositional && p.name != null)
+          .where(
+            (p) =>
+                p.isRequiredPositional &&
+                p.name != null &&
+                !_isMCPToolContext(p),
+          )
           .map((p) => p.name!)
           .join(', ');
+
+      // Named args (excluding MCPToolContext, we'll add it separately)
       final namedArgs = method.formalParameters
-          .where((p) => p.isNamed && p.name != null)
+          .where((p) => p.isNamed && p.name != null && !_isMCPToolContext(p))
           .map((p) => '${p.name}: ${p.name}')
-          .join(', ');
+          .toList();
+
+      // Check if method accepts MCPToolContext and add it if so
+      final hasContextParam = method.formalParameters.any(
+        (p) => _isMCPToolContext(p),
+      );
+      if (hasContextParam) {
+        namedArgs.add('context: context');
+      }
 
       final args = [
         if (positionalArgs.isNotEmpty) positionalArgs,
-        if (namedArgs.isNotEmpty) namedArgs,
-      ].join(', ');
+        if (namedArgs.isNotEmpty) namedArgs.join(', '),
+      ].where((s) => s.isNotEmpty).join(', ');
 
       if (method.returnType.toString().contains('Future')) {
         returnStatement = 'return await $methodName($args)';
@@ -197,6 +214,8 @@ class MCPGenerator extends Generator {
       final inputSchema = _generateInputSchema(method);
       if (inputSchema != null) {
         inputSchemaStr = '      inputSchema: $inputSchema,';
+      } else {
+        inputSchemaStr = '      inputSchema: {},';
       }
 
       return TemplateEngine.renderTemplateFromString(
@@ -367,6 +386,14 @@ class MCPGenerator extends Generator {
     return type.getDisplayString();
   }
 
+  /// Check if a parameter is of type MCPToolContext
+  bool _isMCPToolContext(dynamic param) {
+    final paramType = param.type;
+    // Check if the type is MCPToolContext or MCPToolContext?
+    final typeString = paramType.getDisplayString();
+    return typeString.contains('MCPToolContext');
+  }
+
   /// Check if a method has any MCP annotation
   bool _hasAnyMCPAnnotation(MethodElement method) {
     // Use the type checkers to properly detect MCP annotations
@@ -528,6 +555,9 @@ class MCPGenerator extends Generator {
     for (final param in parameters) {
       final paramName = param.name;
       if (paramName == null) continue;
+
+      // Skip MCPToolContext parameters - they're not part of the input schema
+      if (_isMCPToolContext(param)) continue;
 
       final paramType = _getTypeString(param.type);
       final jsonType = _dartTypeToJsonType(paramType);

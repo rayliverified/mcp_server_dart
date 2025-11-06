@@ -421,6 +421,72 @@ void main() {
         throwsA(isA<UnsupportedError>()),
       );
     });
+
+    test('should get headers when provided', () {
+      final headers = {
+        'authorization': 'Bearer token123',
+        'x-request-id': 'req-456',
+        'user-agent': 'test-client/1.0',
+      };
+      final context = MCPToolContext(
+        {'name': 'John'},
+        'test_tool',
+        '123',
+        headers: headers,
+      );
+
+      expect(context.headers, isNotNull);
+      expect(context.headers, equals(headers));
+      expect(context.header('authorization'), equals('Bearer token123'));
+      expect(context.header('x-request-id'), equals('req-456'));
+      expect(context.header('user-agent'), equals('test-client/1.0'));
+    });
+
+    test('should return null for headers when not provided', () {
+      final context = MCPToolContext({'name': 'John'}, 'test_tool', '123');
+
+      expect(context.headers, isNull);
+      expect(context.header('authorization'), isNull);
+    });
+
+    test('should get header case-insensitively', () {
+      final headers = {
+        'Authorization': 'Bearer token123',
+        'X-Request-ID': 'req-456',
+      };
+      final context = MCPToolContext(
+        {'name': 'John'},
+        'test_tool',
+        '123',
+        headers: headers,
+      );
+
+      // Should find headers regardless of case
+      expect(context.header('authorization'), equals('Bearer token123'));
+      expect(context.header('AUTHORIZATION'), equals('Bearer token123'));
+      expect(context.header('Authorization'), equals('Bearer token123'));
+      expect(context.header('x-request-id'), equals('req-456'));
+      expect(context.header('X-REQUEST-ID'), equals('req-456'));
+    });
+
+    test('should return unmodifiable headers map', () {
+      final headers = {'authorization': 'Bearer token123'};
+      final context = MCPToolContext(
+        {'name': 'John'},
+        'test_tool',
+        '123',
+        headers: headers,
+      );
+
+      final headersMap = context.headers;
+      expect(headersMap, isNotNull);
+
+      // Should return unmodifiable map
+      expect(
+        () => headersMap!['new'] = 'value',
+        throwsA(isA<UnsupportedError>()),
+      );
+    });
   });
 
   group('MCPResourceContent', () {
