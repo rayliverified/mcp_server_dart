@@ -121,11 +121,20 @@ class MCPToolDefinition {
         inputSchema: json['inputSchema'] as Map<String, dynamic>?,
       );
 
-  Map<String, dynamic> toJson() => {
-    'name': name,
-    'description': description,
-    if (inputSchema != null) 'inputSchema': inputSchema,
-  };
+  Map<String, dynamic> toJson() {
+    // Always include inputSchema with proper JSON Schema format
+    // Empty or null schemas become {"type": "object", "properties": {}}
+    final schema = inputSchema;
+    final normalizedSchema = (schema == null || schema.isEmpty)
+        ? {'type': 'object', 'properties': <String, dynamic>{}}
+        : schema;
+
+    return {
+      'name': name,
+      'description': description,
+      'inputSchema': normalizedSchema,
+    };
+  }
 }
 
 /// Resource definition
