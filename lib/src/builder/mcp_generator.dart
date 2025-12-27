@@ -7,10 +7,15 @@ import 'package:analyzer/dart/element/type.dart';
 import 'package:build/build.dart';
 import 'package:dart_style/dart_style.dart';
 import 'package:logging/logging.dart';
-import 'package:mcp_server_dart/src/annotations.dart';
 import 'package:source_gen/source_gen.dart';
 
 import 'template_engine.dart';
+
+// Fully qualified type names for annotation checking
+const _toolTypeName = 'package:mcp_server_dart/src/annotations.dart#tool';
+const _resourceTypeName = 'package:mcp_server_dart/src/annotations.dart#resource';
+const _promptTypeName = 'package:mcp_server_dart/src/annotations.dart#prompt';
+const _paramTypeName = 'package:mcp_server_dart/src/annotations.dart#param';
 
 /// Builder function for build.yaml
 Builder mcpBuilder(BuilderOptions options) =>
@@ -20,11 +25,23 @@ Builder mcpBuilder(BuilderOptions options) =>
 class MCPGenerator extends Generator {
   static final _logger = Logger('MCPGenerator');
 
-  // Type checkers for MCP annotations
-  static const _mcpToolChecker = TypeChecker.typeNamed(tool);
-  static const _mcpResourceChecker = TypeChecker.typeNamed(resource);
-  static const _mcpPromptChecker = TypeChecker.typeNamed(prompt);
-  static const _mcpParamChecker = TypeChecker.typeNamed(param);
+  // Type checkers for MCP annotations (both lowercase and alias forms)
+  static const _mcpToolChecker = TypeChecker.any([
+    TypeChecker.fromUrl(_toolTypeName),
+    TypeChecker.fromUrl('package:mcp_server_dart/src/annotations.dart#MCPTool'),
+  ]);
+  static const _mcpResourceChecker = TypeChecker.any([
+    TypeChecker.fromUrl(_resourceTypeName),
+    TypeChecker.fromUrl('package:mcp_server_dart/src/annotations.dart#MCPResource'),
+  ]);
+  static const _mcpPromptChecker = TypeChecker.any([
+    TypeChecker.fromUrl(_promptTypeName),
+    TypeChecker.fromUrl('package:mcp_server_dart/src/annotations.dart#MCPPrompt'),
+  ]);
+  static const _mcpParamChecker = TypeChecker.any([
+    TypeChecker.fromUrl(_paramTypeName),
+    TypeChecker.fromUrl('package:mcp_server_dart/src/annotations.dart#MCPParam'),
+  ]);
 
   @override
   FutureOr<String?> generate(LibraryReader library, BuildStep buildStep) {
@@ -521,10 +538,14 @@ class MCPGenerator extends Generator {
       }
     }
 
-    // Extract required (note: this overrides the Dart optional/required detection)
+    // Extract required only if explicitly set (not null)
+    // This allows Dart's type inference to take precedence by default
     final requiredValue = annotation.getField('required');
-    if (requiredValue != null && requiredValue.toBoolValue() != null) {
-      data['required'] = requiredValue.toBoolValue()!;
+    if (requiredValue != null && !requiredValue.isNull) {
+      final boolValue = requiredValue.toBoolValue();
+      if (boolValue != null) {
+        data['required'] = boolValue;
+      }
     }
 
     return data.isEmpty ? null : data;
@@ -582,7 +603,7 @@ class MCPGenerator extends Generator {
           property['example'] = mcpParamData['example'];
         }
 
-        // Handle required override from MCPParam
+        // Handle required override from MCPParam if explicitly set
         if (mcpParamData.containsKey('required')) {
           final isRequired = mcpParamData['required'] as bool;
           if (isRequired && !required.contains(paramName)) {
@@ -591,14 +612,20 @@ class MCPGenerator extends Generator {
             required.remove(paramName);
           }
         } else {
-          // Use Dart's optional/required detection
-          if (!param.isOptional) {
+          // Use Dart's type system to determine if parameter is required:
+          // - Required positional parameters (not in [] or {})
+          // - Required named parameters (has 'required' keyword)
+          final dartRequiresParam =
+              param.isRequiredPositional || param.isRequiredNamed;
+          if (dartRequiresParam) {
             required.add(paramName);
           }
         }
       } else {
-        // No MCPParam annotation, use Dart's optional/required detection
-        if (!param.isOptional) {
+        // No MCPParam annotation, use Dart's type system
+        final dartRequiresParam =
+            param.isRequiredPositional || param.isRequiredNamed;
+        if (dartRequiresParam) {
           required.add(paramName);
         }
       }

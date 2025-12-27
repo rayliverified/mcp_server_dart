@@ -3,6 +3,12 @@
 
 library;
 
+// Type aliases for cleaner API - use @MCPTool, @MCPResource, @MCPPrompt, @MCPParam
+typedef MCPTool = tool;
+typedef MCPResource = resource;
+typedef MCPPrompt = prompt;
+typedef MCPParam = param;
+
 /// Annotation to mark a method as an MCP tool.
 ///
 /// Tools are functions that the LLM can call to perform actions or retrieve information.
@@ -81,10 +87,16 @@ class prompt {
   const prompt(this.name, {this.description = '', this.arguments});
 }
 
-/// Annotation to mark a parameter as required or provide additional metadata
+/// Annotation to mark a parameter as required or provide additional metadata.
+///
+/// By default, the generator uses Dart's type system to determine if a parameter
+/// is required (positional params and `required` named params are required,
+/// optional named params and nullable types are optional). Use this annotation
+/// to override that behavior or provide additional metadata.
 class param {
-  /// Whether this parameter is required
-  final bool required;
+  /// Whether this parameter is required. If null, uses Dart's type inference
+  /// (positional params and `required` named params are required).
+  final bool? required;
 
   /// Description of the parameter
   final String description;
@@ -96,7 +108,7 @@ class param {
   final dynamic example;
 
   const param({
-    this.required = true,
+    this.required,
     this.description = '',
     this.type,
     this.example,
