@@ -277,14 +277,48 @@ abstract class MCPServer {
       );
       final result = await handler(context);
 
+      // Convert result to MCP content blocks
+      final content = _resultToContent(result);
+
       return _successResponse(request.id, {
-        'content': [
-          {'type': 'text', 'text': jsonEncode(result)},
-        ],
+        'content': content,
       });
     } catch (e) {
       return _errorResponse(request.id, -32603, 'Tool execution error: $e');
     }
+  }
+
+  /// Convert a tool result to MCP content blocks.
+  /// Supports MCPContent, List<MCPContent>, or falls back to JSON text encoding.
+  List<Map<String, dynamic>> _resultToContent(Object? result) {
+    // Handle List<MCPContent> - multiple content blocks (e.g., text + image)
+    if (result is List<MCPContent>) {
+      return result.map((c) => c.toJson()).toList();
+    }
+
+    // Handle single MCPContent
+    if (result is MCPContent) {
+      return [result.toJson()];
+    }
+
+    // Handle List that might contain MCPContent mixed with other types
+    if (result is List) {
+      final contents = <Map<String, dynamic>>[];
+      for (final item in result) {
+        if (item is MCPContent) {
+          contents.add(item.toJson());
+        } else {
+          // Wrap non-MCPContent items as text
+          contents.add({'type': 'text', 'text': jsonEncode(item)});
+        }
+      }
+      return contents;
+    }
+
+    // Fallback: encode as JSON text (original behavior)
+    return [
+      {'type': 'text', 'text': jsonEncode(result)},
+    ];
   }
 
   /// Handle resources/list request

@@ -378,3 +378,64 @@ class MCPToolResult {
 
   Map<String, dynamic> toJson() => {'content': content, 'isError': isError};
 }
+
+// =============================================================================
+// MCP CONTENT TYPES - For returning rich content from tools
+// =============================================================================
+
+/// Base class for MCP content blocks returned by tools.
+/// Tools can return a single MCPContent or List<MCPContent> to include
+/// multiple content types (e.g., text + image) in their response.
+abstract class MCPContent {
+  const MCPContent();
+
+  Map<String, dynamic> toJson();
+}
+
+/// Text content block for tool responses.
+class TextContent extends MCPContent {
+  final String text;
+
+  const TextContent(this.text);
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'text',
+    'text': text,
+  };
+}
+
+/// Image content block for tool responses.
+/// The AI can "see" images returned this way.
+class ImageContent extends MCPContent {
+  /// Base64-encoded image data
+  final String data;
+
+  /// MIME type of the image (default: image/png)
+  final String mimeType;
+
+  const ImageContent({
+    required this.data,
+    this.mimeType = 'image/png',
+  });
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'image',
+    'data': data,
+    'mimeType': mimeType,
+  };
+}
+
+/// Embedded resource content block for tool responses.
+class ResourceContent extends MCPContent {
+  final MCPResourceContent resource;
+
+  const ResourceContent(this.resource);
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'resource',
+    'resource': resource.toJson(),
+  };
+}
