@@ -1,3 +1,9 @@
+## Unreleased
+
+- ⬆️ **analyzer 14**: Code generation now runs on `analyzer` ^14.5.0 with `source_gen` ^4.3.0, `build` ^4.0.11, `dart_style` ^3.1.13 and `build_runner` ^2.16.2, so projects on current build tooling can depend on `mcp_server_dart`. Generated output is unchanged.
+- ⬆️ **relic 2.0.0-rc.2**: The HTTP transport moves from `relic` 0.10.0 to 2.0.0-rc.2.
+- ⚠️ **Dart 3.11**: The minimum SDK is now 3.11.0, required by `analyzer` 14.
+
 ## 1.4.0
 
 - 🧠 **Modern MCP capabilities**: Added first-class support for MCP logging, completions, task-augmented tool calls, `notifications/initialized`, and richer `initialize` metadata for `2025-11-25`
