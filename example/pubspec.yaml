@@ -23,7 +23,7 @@ dev_dependencies:
 
   # Testing and linting
   lints: ^6.0.0
-  test: ^1.26.3
+  test: ^1.33.0
 
 # Configuration for build_runner to generate MCP registration code
 build_runner:

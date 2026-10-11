@@ -8,7 +8,7 @@ environment:
 
 dependencies:
   # Core MCP protocol dependencies
-  json_annotation: ^4.9.0
+  json_annotation: ^4.12.0
   meta: ^1.17.0
   
   # JSON-RPC for MCP communication
@@ -36,5 +36,5 @@ dev_dependencies:
   
   # Testing and linting
   lints: ^6.0.0
-  test: ^1.26.3
+  test: ^1.33.0
   json_serializable: ^6.14.1
